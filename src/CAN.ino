@@ -20,6 +20,12 @@ const twai_message_t  simulate_scroll_up={ .identifier=0x201, .data_length_code=
                       Msg_CoolantRequestDIS={ .identifier=0x246, .data_length_code=5, .data={0x04, 0xAA, 0x01, 0x01, 0x0B}},
                       Msg_CoolantRequestECC={ .identifier=0x248, .data_length_code=5, .data={0x04, 0xAA, 0x01, 0x01, 0x10}};
 
+// CDC 40 Opera DAB support messages
+const twai_message_t  Msg_DAB_Box_present=    { .identifier=0x50D, .data_length_code=8, .data={0x1D, 0x21, 0x42, 0x16, 0x20, 0x00, 0x00, 0x00}},
+                      Msg_DAB_signal_receive=  { .identifier=0x562, .data_length_code=8, .data={0x03, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00}},
+                      Msg_CDC40BLAU_AUX_OFF=   { .identifier=0x562, .data_length_code=8, .data={0x05, 0xE3, 0x05, 0x01, 0x10, 0x10, 0x00, 0x00}},
+                      Msg_CDC40BLAU_AUX_ON=    { .identifier=0x562, .data_length_code=8, .data={0x05, 0xE3, 0x05, 0x01, 0x0F, 0x10, 0x00, 0x00}};
+
 // can't initialize the values of the union inside the twai_message_t type struct, which is why it's defined here, then the transmit task sets the .ss flag
 twai_message_t  Msg_PreventDisplayUpdate={ .identifier=0x2C1, .data_length_code=8, .data={0x30, 0x0, 0x7F, 0, 0, 0, 0, 0}},
                 Msg_AbortTransmission={ .identifier=0x2C1, .data_length_code=8, .data={0x32, 0x0, 0, 0, 0, 0, 0, 0}};     // can have unforseen consequences such as resets! use as last resort
@@ -521,43 +527,68 @@ void canAirConMacroTask(void *pvParameters){
   }
 }
 
+// this task sends the CDC 40 Opera DAB box presence beacon (~every 350ms) so the radio recognises an external DAB tuner
+void canDABHeartbeatTask(void *pvParameters){
+  while(1){
+    xQueueSend(canTxQueue, &Msg_DAB_Box_present, pdMS_TO_TICKS(50));
+    vTaskDelay(pdMS_TO_TICKS(350));
+  }
+}
+
+// sends the three 0x562 messages that activate AUX audio input on the CDC 40 Opera
+// must be called every time the radio switches to DAB/AUX mode
+void canSendAuxOnSequence(){
+  xQueueSend(canTxQueue, &Msg_DAB_signal_receive, pdMS_TO_TICKS(100));
+  vTaskDelay(pdMS_TO_TICKS(10));
+  xQueueSend(canTxQueue, &Msg_CDC40BLAU_AUX_OFF, pdMS_TO_TICKS(100));
+  vTaskDelay(pdMS_TO_TICKS(10));
+  xQueueSend(canTxQueue, &Msg_CDC40BLAU_AUX_ON, pdMS_TO_TICKS(100));
+}
+
 // this task monitors raw data contained within messages sent by the radio and looks for Aux string being printed to the display; rejects "Aux" in views such as "Audio Source" screen (CD70/DVD90)
 void canMessageDecoder(void *pvParameters){
   uint8_t rxDisplay;
-  const uint8_t AuxPattern[8]={0x00, 0x6D, 0x00, 0x41, 0x00, 0x75, 0x00, 0x78};     // snippet of data to look for, allows for robust detection of "Aux" on all kinds of headunits
-  int patternIndex=0;
   bool patternFound=0;
-  int currentIndex[6] = {0};
-  const char patterns[6][17] = {           // this is a crutch for CD30/CD40 "SOUND" menu, required to be able to adjust fader/balance/bass/treble, otherwise EHU32 will block it from showing up
-    {0, 0x6D, 0, 0x41, 0, 0x75, 0, 0x78},                // formatted Aux (left or center aligned). Weird formatting because the data is in UTF-16
+  int currentIndex[7] = {0};
+  // patterns[0] = Aux (UTF-16, CD30/CD40/CD70/DVD90), patterns[6] = DAB (UTF-16, CDC 40 Opera)
+  // patterns[1..5] = SOUND menu items (Fader/Balance/Bass/Treble/Sound Off) — exempt from display blocking
+  const char patterns[7][17] = {
+    {0, 0x6D, 0, 0x41, 0, 0x75, 0, 0x78},                                            // Aux (UTF-16LE, formatted)
     {0x46, 0, 0x61, 0, 0x64, 0, 0x65, 0, 0x72},                                      // Fader
     {0x42, 0, 0x61, 0, 0x6c, 0, 0x61, 0, 0x6e, 0, 0x63, 0, 0x65},                    // Balance
     {0x42, 0, 0x61, 0, 0x73, 0, 0x73},                                               // Bass
     {0x54, 0, 0x72, 0, 0x65, 0, 0x62, 0, 0x6c, 0, 0x65},                             // Treble
-    {0x53, 0, 0x6f, 0, 0x75, 0, 0x6e, 0, 0x64, 0, 0x20, 0, 0x4f, 0, 0x66, 0, 0x66}   // Sound Off
+    {0x53, 0, 0x6f, 0, 0x75, 0, 0x6e, 0, 0x64, 0, 0x20, 0, 0x4f, 0, 0x66, 0, 0x66}, // Sound Off
+    {0x44, 0, 0x41, 0, 0x42, 0}                                                       // DAB (UTF-16LE, CDC 40 Opera)
   };
-  const char patternLengths[6] = {8, 9, 13, 7, 11, 17};
+  const char patternLengths[7] = {8, 9, 13, 7, 11, 17, 6};
   while(1){
     if(xQueueReceive(canDispQueue, &rxDisplay, portMAX_DELAY)==pdTRUE){         // wait for new data queued by the ProcessTask
-      for(int i=0;i<6; i++){
+      for(int i=0;i<7; i++){
           if(rxDisplay==patterns[i][currentIndex[i]]){
             currentIndex[i]++;
             if(currentIndex[i]==patternLengths[i]){
               switch(i){
-                case 0:{          // formatting+Aux detected
+                case 0:{          // formatting+Aux detected (CD30/CD40/CD70/DVD90)
                   patternFound=1;
-                  last_millis_aux=millis();             // keep track of when was the last time Aux has been seen
+                  last_millis_aux=millis();
                   DEBUG_PRINTLN("CAN Decode: Found Aux string!");
                   break;
                 }
-                case 1:   // either Fader, Balance, Bass, Treble or Sound Off
+                case 6:{          // DAB detected (CDC 40 Opera)
+                  patternFound=1;
+                  last_millis_aux=millis();
+                  DEBUG_PRINTLN("CAN Decode: Found DAB string!");
+                  break;
+                }
+                case 1:   // Fader, Balance, Bass, Treble or Sound Off -> exempt from display blocking
                 case 2:
                 case 3:
                 case 4:
                 case 5: patternFound=0;
-                        clearFlag(CAN_allowAutoRefresh);        // we let the following message(s) through
+                        clearFlag(CAN_allowAutoRefresh);
               }
-              for(int j=0; j<6; j++){
+              for(int j=0; j<7; j++){
                   currentIndex[j]=0;
               }
               break;
@@ -571,12 +602,15 @@ void canMessageDecoder(void *pvParameters){
       }
     }
     if(checkFlag(CAN_allowAutoRefresh) && !patternFound && (last_millis_aux+6000<millis())){
-      clearFlag(CAN_allowAutoRefresh);    // Aux string has not appeared within the last 6 secs -> stop auto-updating the display
+      clearFlag(CAN_allowAutoRefresh);    // Aux/DAB string has not appeared within the last 6 secs -> stop auto-updating the display
+      if(eTaskGetState(canDABHeartbeatTaskHandle)!=eSuspended) vTaskSuspend(canDABHeartbeatTaskHandle);  // stop DAB heartbeat when leaving DAB/AUX mode
       DEBUG_PRINTLN("CAN Decode: Disabling display autorefresh...");
     } else {
       if(patternFound && !checkFlag(CAN_allowAutoRefresh)){
         setFlag(CAN_allowAutoRefresh);
-        setFlag(DIS_forceUpdate);        // gotta force a buffer update here anyway since the metadata might be outdated (wouldn't wanna reprint old audio metadata right?)
+        setFlag(DIS_forceUpdate);        // force buffer update since metadata might be outdated
+        canSendAuxOnSequence();          // activate CDC 40 Opera AUX input on every switch to DAB/AUX mode
+        if(eTaskGetState(canDABHeartbeatTaskHandle)==eSuspended) vTaskResume(canDABHeartbeatTaskHandle);  // start DAB box presence heartbeat
         DEBUG_PRINTLN("CAN Decode: Enabling display autorefresh...");
       }
       patternFound=0;
