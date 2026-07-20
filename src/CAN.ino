@@ -527,18 +527,12 @@ void canAirConMacroTask(void *pvParameters){
   }
 }
 
-// this task sends the CDC 40 Opera DAB box presence beacon (~every 350ms) so the radio recognises an external DAB tuner
-void canDABHeartbeatTask(void *pvParameters){
-  while(1){
-    xQueueSend(canTxQueue, &Msg_DAB_Box_present, pdMS_TO_TICKS(50));
-    vTaskDelay(pdMS_TO_TICKS(350));
-  }
-}
 
-// sends the three 0x562 messages that activate AUX audio input on the CDC 40 Opera
+
+// sends the 0x562 messages that activate AUX audio input on the CDC 40 Opera
 // must be called every time the radio switches to DAB/AUX mode
 void canSendAuxOnSequence(){
-  xQueueSend(canTxQueue, &Msg_DAB_signal_receive, pdMS_TO_TICKS(100));
+  xQueueSend(canTxQueue, &Msg_DAB_Box_present, pdMS_TO_TICKS(100));
   vTaskDelay(pdMS_TO_TICKS(10));
   xQueueSend(canTxQueue, &Msg_CDC40BLAU_AUX_OFF, pdMS_TO_TICKS(100));
   vTaskDelay(pdMS_TO_TICKS(10));
@@ -559,9 +553,9 @@ void canMessageDecoder(void *pvParameters){
     {0x42, 0, 0x61, 0, 0x73, 0, 0x73},                                               // Bass
     {0x54, 0, 0x72, 0, 0x65, 0, 0x62, 0, 0x6c, 0, 0x65},                             // Treble
     {0x53, 0, 0x6f, 0, 0x75, 0, 0x6e, 0, 0x64, 0, 0x20, 0, 0x4f, 0, 0x66, 0, 0x66}, // Sound Off
-    {0x44, 0, 0x41, 0, 0x42, 0}                                                       // DAB (UTF-16LE, CDC 40 Opera)
+    {0x72, 0, 0x6F, 0, 0x72, 0x11, 0x01}                                       // Sequence: 72 00 6F 00 72 11 01 (CDC 40 Opera, without PCI byte 0x24)
   };
-  const char patternLengths[7] = {8, 9, 13, 7, 11, 17, 6};
+  const char patternLengths[7] = {8, 9, 13, 7, 11, 17, 7};
   while(1){
     if(xQueueReceive(canDispQueue, &rxDisplay, portMAX_DELAY)==pdTRUE){         // wait for new data queued by the ProcessTask
       for(int i=0;i<7; i++){
@@ -603,14 +597,12 @@ void canMessageDecoder(void *pvParameters){
     }
     if(checkFlag(CAN_allowAutoRefresh) && !patternFound && (last_millis_aux+6000<millis())){
       clearFlag(CAN_allowAutoRefresh);    // Aux/DAB string has not appeared within the last 6 secs -> stop auto-updating the display
-      if(eTaskGetState(canDABHeartbeatTaskHandle)!=eSuspended) vTaskSuspend(canDABHeartbeatTaskHandle);  // stop DAB heartbeat when leaving DAB/AUX mode
       DEBUG_PRINTLN("CAN Decode: Disabling display autorefresh...");
     } else {
       if(patternFound && !checkFlag(CAN_allowAutoRefresh)){
         setFlag(CAN_allowAutoRefresh);
         setFlag(DIS_forceUpdate);        // force buffer update since metadata might be outdated
-        canSendAuxOnSequence();          // activate CDC 40 Opera AUX input on every switch to DAB/AUX mode
-        if(eTaskGetState(canDABHeartbeatTaskHandle)==eSuspended) vTaskResume(canDABHeartbeatTaskHandle);  // start DAB box presence heartbeat
+        canSendAuxOnSequence();          // send DAB box presence + activate CDC 40 Opera AUX input
         DEBUG_PRINTLN("CAN Decode: Enabling display autorefresh...");
       }
       patternFound=0;

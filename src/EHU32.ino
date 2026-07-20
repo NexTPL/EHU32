@@ -54,7 +54,7 @@
 // pin definitions
 const int PCM_MUTE_CTL=23, PCM_ENABLE=27;            // D23 controls PCM5102s soft-mute function, D27 enables PCM5102s power
 // RTOS stuff
-TaskHandle_t canReceiveTaskHandle, canDisplayTaskHandle, canProcessTaskHandle, canTransmitTaskHandle, canWatchdogTaskHandle, canAirConMacroTaskHandle, canMessageDecoderTaskHandle, eventHandlerTaskHandle, canDABHeartbeatTaskHandle;
+TaskHandle_t canReceiveTaskHandle, canDisplayTaskHandle, canProcessTaskHandle, canTransmitTaskHandle, canWatchdogTaskHandle, canAirConMacroTaskHandle, canMessageDecoderTaskHandle, eventHandlerTaskHandle;
 QueueHandle_t canRxQueue, canTxQueue, canDispQueue;
 SemaphoreHandle_t CAN_MsgSemaphore=NULL, BufferSemaphore=NULL;
 EventGroupHandle_t eventGroup;
@@ -81,7 +81,7 @@ void canAirConMacroTask(void* pvParameters);
 void OTAhandleTask(void* pvParameters);
 void prepareMultiPacket(int bytes_processed, char* buffer_to_read);
 int processDisplayMessage(char* upper_line_buffer, char* middle_line_buffer, char* lower_line_buffer);
-void canDABHeartbeatTask(void* pvParameters);
+
 void canSendAuxOnSequence();
 
 void setup(){
@@ -204,8 +204,7 @@ void setup(){
   #endif
   xTaskCreatePinnedToCore(canAirConMacroTask, "AirConMacroTask", 2048, NULL, 10, &canAirConMacroTaskHandle, 0);
   vTaskSuspend(canAirConMacroTaskHandle);       // Aircon macro task exists solely to execute simulated button presses asynchronously, as such it is only started when needed
-  xTaskCreatePinnedToCore(canDABHeartbeatTask, "DABHeartbeatTask", 2048, NULL, 1, &canDABHeartbeatTaskHandle, 0);
-  vTaskSuspend(canDABHeartbeatTaskHandle);      // DAB heartbeat is only active while the radio is in DAB/AUX mode
+
   xTaskCreatePinnedToCore(eventHandlerTask, "eventHandler", 8192, NULL, 4, &eventHandlerTaskHandle, 1);
 }
 
