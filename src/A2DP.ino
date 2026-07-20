@@ -1,7 +1,19 @@
 #include <A2DPVolumeControl.h>
 I2SStream i2s;
 BluetoothA2DPSink a2dp_sink(i2s);
-A2DPNoVolumeControl noVolumeControl;
+// Custom volume control that applies 2x digital gain with clipping protection
+class A2DPAmplifiedControl : public A2DPNoVolumeControl {
+public:
+  virtual void update_audio_data(Frame *data, uint16_t frameCount) override {
+    for (uint16_t i = 0; i < frameCount; i++) {
+      int32_t ch1 = (int32_t)data[i].channel1 * 2;
+      int32_t ch2 = (int32_t)data[i].channel2 * 2;
+      data[i].channel1 = (ch1 > 32767) ? 32767 : ((ch1 < -32768) ? -32768 : (int16_t)ch1);
+      data[i].channel2 = (ch2 > 32767) ? 32767 : ((ch2 < -32768) ? -32768 : (int16_t)ch2);
+    }
+  }
+};
+A2DPAmplifiedControl amplifiedControl;
 
 // updates the buffers
 void avrc_metadata_callback(uint8_t md_type, const uint8_t *data2) {  // fills the song title buffer with data, updates text_lenght with the amount of chars
@@ -64,7 +76,7 @@ void a2dp_init(){
   a2dp_sink.set_avrc_metadata_attribute_mask(ESP_AVRC_MD_ATTR_TITLE | ESP_AVRC_MD_ATTR_ARTIST | ESP_AVRC_MD_ATTR_ALBUM);
   a2dp_sink.set_on_connection_state_changed(a2dp_connection_state_changed);
   a2dp_sink.set_on_audio_state_changed(a2dp_audio_state_changed);
-  a2dp_sink.set_volume_control(&noVolumeControl);
+  a2dp_sink.set_volume_control(&amplifiedControl);
   a2dp_sink.set_reconnect_delay(500);
   a2dp_sink.set_auto_reconnect(true, 2000);
 
