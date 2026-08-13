@@ -51,16 +51,33 @@ void a2dp_connection_state_changed(esp_a2d_connection_state_t state, void *ptr){
     setFlag(bt_connected);
   } else {
     clearFlag(bt_connected);
+    rev_paused = false;
   }
   setFlag(bt_state_changed);
+}
+
+// a2dp avrc play status callback
+void avrc_play_status_callback(esp_avrc_playback_stat_t playback){
+  if(playback == ESP_AVRC_PLAYBACK_PLAYING){
+    setFlag(bt_audio_playing);
+  } else {
+    clearFlag(bt_audio_playing);
+    if(!rev_engaged){
+      rev_paused = false;
+    }
+  }
+  setFlag(audio_state_changed);
 }
 
 // a2dp audio state callback
 void a2dp_audio_state_changed(esp_a2d_audio_state_t state, void *ptr){  // callback for audio playing/stopped
   if(state==2){                                                         //  state=1 -> stopped, state=2 -> playing
-    setFlag(bt_audio_playing);
+    // Only set bt_audio_playing if not stopped via AVRCP; AVRCP play status is preferred
   } else {
     clearFlag(bt_audio_playing);
+    if(!rev_engaged){
+      rev_paused = false;
+    }
   }
   setFlag(audio_state_changed);
 }
@@ -74,6 +91,7 @@ void a2dp_init(){
   i2s.begin(i2s_conf);
   a2dp_sink.set_avrc_metadata_callback(avrc_metadata_callback);
   a2dp_sink.set_avrc_metadata_attribute_mask(ESP_AVRC_MD_ATTR_TITLE | ESP_AVRC_MD_ATTR_ARTIST | ESP_AVRC_MD_ATTR_ALBUM);
+  a2dp_sink.set_avrc_rn_playstatus_callback(avrc_play_status_callback);
   a2dp_sink.set_on_connection_state_changed(a2dp_connection_state_changed);
   a2dp_sink.set_on_audio_state_changed(a2dp_audio_state_changed);
   a2dp_sink.set_volume_control(&amplifiedControl);
@@ -89,6 +107,8 @@ void a2dp_init(){
 
 // handles events such as connecion/disconnection and audio play/pause
 void A2DP_EventHandler(){
+  static unsigned long rev_disengage_timer = 0;
+
   if(checkFlag(ehu_started) && !checkFlag(a2dp_started)){             // this enables bluetooth A2DP service only after the radio is started
     a2dp_init();
   }
@@ -116,6 +136,31 @@ void A2DP_EventHandler(){
       writeTextToDisplay(1, "Bluetooth connected", "Paused", "");
     }
     clearFlag(audio_state_changed);
+  }
+
+  // reverse gear auto-pause: called from eventHandlerTask to avoid BT stack issues when triggering from canProcessTask
+  if(checkFlag(bt_connected) && checkFlag(a2dp_started)){
+    if(rev_engaged){
+      rev_disengage_timer = 0;
+      if(checkFlag(bt_audio_playing) && !rev_paused){
+        rev_paused = true;                // set BEFORE pause() to prevent re-entry on next loop tick
+        a2dp_sink.pause();
+        DEBUG_PRINTLN("A2DP: Reverse detected -> auto-pausing music");
+      }
+    } else {
+      if(rev_paused){                     // only resume if EHU32 was the one that paused it
+        if(rev_disengage_timer == 0){
+          rev_disengage_timer = millis();
+        } else if(millis() - rev_disengage_timer >= 400){  // 400ms debounce for gear transitions
+          rev_paused = false;
+          rev_disengage_timer = 0;
+          a2dp_sink.play();
+          DEBUG_PRINTLN("A2DP: Reverse released -> resuming music");
+        }
+      } else {
+        rev_disengage_timer = 0;
+      }
+    }
   }
 }
 

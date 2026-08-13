@@ -176,6 +176,7 @@ void canProcessTask(void *pvParameters){
                   } else {
                     a2dp_sink.play();
                   }
+                  rev_paused = false;     // manual play/pause overrides auto-resume
                 }
               break;
             }
@@ -212,6 +213,10 @@ void canProcessTask(void *pvParameters){
       }
       case 0x2C1: {
         if(RxMsg.data[2]!=0 && canISO_frameSpacing!=RxMsg.data[2]) canISO_frameSpacing=RxMsg.data[2];            // adjust ISO 15765-2 frame spacing delay only if the receiving node calls for it
+        break;
+      }
+      case 0x4E8: {                                         // motion/direction data; Byte7 (data[6]) Bit3 (1-indexed, 0x04) = Reverse
+        rev_engaged = (RxMsg.data[6] & 0x04) != 0;
         break;
       }
       case 0x501: {                                         // CD30MP3 goes to sleep -> disable bluetooth connectivity

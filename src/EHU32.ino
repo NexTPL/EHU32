@@ -71,6 +71,9 @@ volatile int disp_mode=-1;
 unsigned long last_millis=0, last_millis_req=0, last_millis_disp=0, last_millis_aux=0;
 // body data
 bool vehicle_ECC_present, vehicle_UHP_present;
+// reverse gear state — volatile bool instead of event group bits (bits 24+ are reserved by FreeRTOS)
+volatile bool rev_engaged = false;    // true when reverse gear is active
+volatile bool rev_paused = false;     // true when EHU32 auto-paused music due to reverse
 
 void canReceiveTask(void* pvParameters);
 void canTransmitTask(void* pvParameters);
